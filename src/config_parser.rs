@@ -14,14 +14,13 @@ static XDG_CONFIG_HOME: LazyLock<String> = LazyLock::new(|| {
     env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", HOME_DIR.as_str()))
 });
 
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct Link {
     pub from: PathBuf,
     pub to: PathBuf,
-    pub sudo: bool,
 }
 
-#[derive(Debug)]
+// #[derive(Debug)]
 pub struct Config {
     pub links: Vec<Link>,
 }
@@ -48,23 +47,11 @@ pub fn read_config(path: &PathBuf) -> Result<Config, String> {
 
 fn parse_line(line: &str, idx: usize) -> Result<Link, String> {
     // Read split out the line
-    let (mut text_kind, mut text_params) = match line.split_once('=') {
+    let (_text_kind, mut text_params) = match line.split_once('=') {
         Some((a, b)) => (a, b),
         None => return Err(format!("Invalid syntax on line {}", idx)),
     };
-    (text_kind, text_params) = (text_kind.trim(), text_params.trim());
-
-    // Check the link type
-    let use_sudo: bool = match text_kind {
-        "link" => false,
-        "sudolink" => true,
-        _ => {
-            return Err(format!(
-                "Config only supports 'link' and 'sudolink'. Invalid kind '{}' on line {}",
-                text_kind, idx
-            ));
-        }
-    };
+    text_params = text_params.trim();
 
     // Before applying regex, check if there is a need to match
     if text_params.is_empty() {
@@ -82,7 +69,6 @@ fn parse_line(line: &str, idx: usize) -> Result<Link, String> {
         let to = expand_keywords(to).map_err(|err| format!("{} on line {}", err, idx))?;
 
         return Ok(Link {
-            sudo: use_sudo,
             from: PathBuf::from(&from),
             to: PathBuf::from(&to),
         });
