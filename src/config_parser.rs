@@ -14,13 +14,11 @@ static XDG_CONFIG_HOME: LazyLock<String> = LazyLock::new(|| {
     env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", HOME_DIR.as_str()))
 });
 
-// #[derive(Debug)]
 pub struct Link {
     pub from: PathBuf,
     pub to: PathBuf,
 }
 
-// #[derive(Debug)]
 pub struct Config {
     pub links: Vec<Link>,
 }
@@ -67,6 +65,29 @@ fn parse_line(line: &str, idx: usize) -> Result<Link, String> {
 
         let from = expand_keywords(from).map_err(|err| format!("{} on line {}", err, idx))?;
         let to = expand_keywords(to).map_err(|err| format!("{} on line {}", err, idx))?;
+
+        let from_path = PathBuf::from(&from);
+        let to_path = PathBuf::from(&to);
+
+        if !from_path.exists() {
+            return Err(format!(
+                "<from> path specified at line {} doest contain any object",
+                idx
+            ));
+        }
+
+        if !to_path.exists() {
+            if let Some(parent) = to_path.parent() {
+                if !parent.exists() {
+                    return Err(format!(
+                        "Parent directory does not exist: {}",
+                        parent.display()
+                    ));
+                }
+            } else {
+                return Err(format!("Path has no parent: {}", to_path.display()));
+            }
+        }
 
         return Ok(Link {
             from: PathBuf::from(&from),
