@@ -14,11 +14,13 @@ static XDG_CONFIG_HOME: LazyLock<String> = LazyLock::new(|| {
     env::var("XDG_CONFIG_HOME").unwrap_or_else(|_| format!("{}/.config", HOME_DIR.as_str()))
 });
 
+#[derive(Debug, PartialEq)]
 pub struct Link {
     pub from: PathBuf,
     pub to: PathBuf,
 }
 
+#[derive(Debug)]
 pub struct Config {
     pub links: Vec<Link>,
 }
