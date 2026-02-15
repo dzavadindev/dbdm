@@ -33,7 +33,7 @@ pub fn resolve_symlink_target(link_path: &Path, target: &Path) -> PathBuf {
 //
 // @param from: &Path - the source path for the symlink
 // @param to: &Path - the destination path for the symlink
-// @return std::io::Result<()> - if replacement was successful
+// @return Result<()> - if replacement was successful
 pub fn replace_link(from: &Path, to: &Path) -> std::io::Result<()> {
     remove_existing(to)?;
     std::os::unix::fs::symlink(from, to)
@@ -43,7 +43,7 @@ pub fn replace_link(from: &Path, to: &Path) -> std::io::Result<()> {
 //
 // @param from: &Path - the source path for the symlink
 // @param to: &Path - the destination path to backup and replace
-// @return std::io::Result<()> - if backup and replacement were successful
+// @return Result<()> - if backup and replacement were successful
 pub fn backup_and_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     let backup_dir = match std::fs::metadata(from) {
         Ok(meta) if meta.is_dir() => from.to_path_buf(),
@@ -84,7 +84,7 @@ pub fn unique_backup_path(dir: &Path, name: &str) -> PathBuf {
 // Helper to remove existing path whether file, directory, or symlink
 //
 // @param path: &Path - the path to remove
-// @return std::io::Result<()> - if removal was successful
+// @return Result<()> - if removal was successful
 pub fn remove_existing(path: &Path) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
     if meta.file_type().is_symlink() || meta.is_file() {

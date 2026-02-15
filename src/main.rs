@@ -5,12 +5,38 @@ use std::path::{Path, PathBuf};
 
 mod config_parser;
 
+struct RunMode {
+    test_mode: bool,
+}
+
+macro_rules! app_println {
+    ($mode:expr, $($arg:tt)*) => {
+        if !$mode.test_mode {
+            println!($($arg)*);
+        }
+    };
+}
+
+macro_rules! app_print {
+    ($mode:expr, $($arg:tt)*) => {
+        if !$mode.test_mode {
+            print!($($arg)*);
+        }
+    };
+}
+
 fn main() {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mode = RunMode {
+        test_mode: args.iter().any(|arg| arg == "--test-mode"),
+    };
+    let force = args.iter().any(|arg| arg == "--force");
+
     // Grab current dir
     let mut pwd = match std::env::current_dir() {
         Ok(path) => path,
         Err(err) => {
-            println!("Could not parse the {}", err.to_string());
+            app_println!(&mode, "Could not parse the {}", err.to_string());
             return;
         }
     };
@@ -20,7 +46,8 @@ fn main() {
     if !pwd.exists() {
         let mut path_str = pwd.clone();
         path_str.pop();
-        println!(
+        app_println!(
+            &mode,
             "dbdm.conf doesn exist in {}",
             path_str.to_str().expect("Can't parse dir path")
         );
@@ -31,18 +58,22 @@ fn main() {
     let config = match config_parser::read_config(&pwd) {
         Ok(res) => res,
         Err(err) => {
-            println!("Error in config:\n\n{}", err);
+            app_println!(&mode, "Error in config:\n\n{}", err);
             return;
         }
     };
 
     // Handle the command
-    let command = std::env::args().nth(1).unwrap_or(String::from("help"));
+    let command = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .cloned()
+        .unwrap_or_else(|| String::from("help"));
     match command.as_str() {
-        "check" => check(&config),
-        "sync" => sync(&config),
-        "help" => help(),
-        _ => help(),
+        "check" => check(&config, &mode),
+        "sync" => sync(&config, &mode, force),
+        "help" => help(&mode),
+        _ => help(&mode),
     }
 }
 
@@ -51,7 +82,7 @@ fn main() {
 // the desired state that is specified in the provided config
 //
 // @param config: &Config - the parsed config state
-fn check(config: &Config) {
+fn check(config: &Config, mode: &RunMode) {
     for link in &config.links {
         // Get an absolute path to the files
         let from_full = std::fs::canonicalize(&link.from).unwrap_or_else(|_| link.from.clone());
@@ -66,13 +97,15 @@ fn check(config: &Config) {
         };
 
         if is_match {
-            println!(
+            app_println!(
+                mode,
                 "\x1b[32m{} -> {}\x1b[0m",
                 from_full.display(),
                 to_full.display()
             );
         } else {
-            println!(
+            app_println!(
+                mode,
                 "\x1b[31m{} -> {}\x1b[0m",
                 from_full.display(),
                 to_full.display()
@@ -106,9 +139,7 @@ struct PlanItem {
 // Otherwise tires to sync the state described in the config with the system state
 //
 // @param config: &Config - the parsed config state
-fn sync(config: &Config) {
-    let force = std::env::args().any(|arg| arg == "--force");
-
+fn sync(config: &Config, mode: &RunMode, force: bool) {
     // The plan to be previewed and then executed
     let mut plan: Vec<PlanItem> = Vec::new();
     // To have a quicker lookup for which plan items require care
@@ -141,8 +172,11 @@ fn sync(config: &Config) {
                     }
                 }
 
+                let is_empty = is_empty_path(&to, &meta).unwrap_or(false);
+                let is_conflict = !is_empty;
+
                 // Account for the flag
-                let action = if force {
+                let action = if force || !is_conflict {
                     SyncAction::Replace
                 } else {
                     SyncAction::Pending
@@ -157,38 +191,40 @@ fn sync(config: &Config) {
                     reason: None,
                 });
 
-                if !force {
+                if !force && is_conflict {
                     pending_indices.push(idx);
                 }
             }
 
-            // It was an invalid link
+            // Missing target: safe to replace without prompt
             Err(_) => {
                 plan.push(PlanItem {
                     from,
                     to,
-                    action: SyncAction::Skip,
-                    reason: Some("path does not exist".to_string()),
+                    action: SyncAction::Replace,
+                    reason: None,
                 });
             }
         }
     }
 
-    for idx in pending_indices {
+    for &idx in pending_indices.iter() {
         let item = &plan[idx];
-        println!("\nConflict at: {}", item.to.display());
-        if let Err(err) = print_preview(&item.to) {
-            println!("Preview error: {}", err);
+        app_println!(mode, "\nConflict at: {}", item.to.display());
+        if let Err(err) = print_preview(mode, &item.to) {
+            app_println!(mode, "Preview error: {}", err);
         }
 
-        let action = prompt_action();
+        let action = prompt_action(mode);
         plan[idx].action = action;
     }
 
-    print_plan("Planned actions", &plan);
-    if !confirm_proceed() {
-        println!("Aborted.");
-        return;
+    print_plan(mode, "Planned actions", &plan);
+    if !force && !pending_indices.is_empty() {
+        if !confirm_proceed(mode) {
+            app_println!(mode, "Aborted.");
+            return;
+        }
     }
 
     let mut executed: Vec<PlanItem> = Vec::new();
@@ -223,11 +259,11 @@ fn sync(config: &Config) {
         }
     }
 
-    print_plan("Outcome", &executed);
+    print_plan(mode, "Outcome", &executed);
     if !errors.is_empty() {
-        println!("\nErrors:");
+        app_println!(mode, "\nErrors:");
         for err in errors {
-            println!("- {}", err);
+            app_println!(mode, "- {}", err);
         }
     }
 }
@@ -236,22 +272,22 @@ fn sync(config: &Config) {
 //
 // @param path: &Path - the path to the symlink
 // @return Result<()> - if print was successful
-fn print_preview(path: &Path) -> std::io::Result<()> {
+fn print_preview(mode: &RunMode, path: &Path) -> std::io::Result<()> {
     let meta = std::fs::symlink_metadata(path)?;
 
     if meta.file_type().is_symlink() {
         let target = std::fs::read_link(path)?;
-        println!("SYMLINK: {} -> {}", path.display(), target.display());
+        app_println!(mode, "SYMLINK: {} -> {}", path.display(), target.display());
         return Ok(());
     }
 
     if meta.is_file() {
-        print_file_preview(path)?;
+        print_file_preview(mode, path)?;
         return Ok(());
     }
 
     if meta.is_dir() {
-        print_dir_preview(path)?;
+        print_dir_preview(mode, path)?;
     }
 
     Ok(())
@@ -261,21 +297,22 @@ fn print_preview(path: &Path) -> std::io::Result<()> {
 //
 // @param path: &Path - the directory path to traverse
 // @return Result<()> - if print was successful
-fn print_dir_preview(path: &Path) -> std::io::Result<()> {
-    println!("\nDIRECTORY: {}", path.display());
+fn print_dir_preview(mode: &RunMode, path: &Path) -> std::io::Result<()> {
+    app_println!(mode, "\nDIRECTORY: {}", path.display());
     for entry in std::fs::read_dir(path)? {
         let entry = entry?;
         let entry_path = entry.path();
         let meta = std::fs::symlink_metadata(&entry_path)?;
 
         if meta.is_dir() {
-            print_dir_preview(&entry_path)?;
+            print_dir_preview(mode, &entry_path)?;
             continue;
         }
 
         if meta.file_type().is_symlink() {
             let target = std::fs::read_link(&entry_path)?;
-            println!(
+            app_println!(
+                mode,
                 "\nSYMLINK: {} -> {}",
                 entry_path.display(),
                 target.display()
@@ -284,7 +321,7 @@ fn print_dir_preview(path: &Path) -> std::io::Result<()> {
         }
 
         if meta.is_file() {
-            print_file_preview(&entry_path)?;
+            print_file_preview(mode, &entry_path)?;
         }
     }
 
@@ -295,13 +332,13 @@ fn print_dir_preview(path: &Path) -> std::io::Result<()> {
 //
 // @param path: &Path - the file path to preview
 // @return Result<()> - if print was successful
-fn print_file_preview(path: &Path) -> std::io::Result<()> {
+fn print_file_preview(mode: &RunMode, path: &Path) -> std::io::Result<()> {
     const MAX_PREVIEW_SIZE: u64 = 32 * 1024;
     let meta = std::fs::metadata(path)?;
-    println!("\nFILE: {}", path.display());
+    app_println!(mode, "\nFILE: {}", path.display());
 
     if meta.len() > MAX_PREVIEW_SIZE {
-        println!("TOO LARGE ({} bytes)", meta.len());
+        app_println!(mode, "TOO LARGE ({} bytes)", meta.len());
         return Ok(());
     }
 
@@ -310,22 +347,22 @@ fn print_file_preview(path: &Path) -> std::io::Result<()> {
     file.read_to_end(&mut buf)?;
 
     if buf.iter().any(|b| *b == 0) {
-        println!("BINARY FILE");
+        app_println!(mode, "BINARY FILE");
         return Ok(());
     }
 
     match String::from_utf8(buf) {
         Ok(text) => {
             if text.is_empty() {
-                println!("(empty)");
+                app_println!(mode, "(empty)");
             } else {
-                print!("{}", text);
+                app_print!(mode, "{}", text);
                 if !text.ends_with('\n') {
-                    println!();
+                    app_println!(mode, "");
                 }
             }
         }
-        Err(_) => println!("BINARY FILE"),
+        Err(_) => app_println!(mode, "BINARY FILE"),
     }
 
     Ok(())
@@ -334,9 +371,9 @@ fn print_file_preview(path: &Path) -> std::io::Result<()> {
 // Helper to get user choice on how to resolve a conflict
 //
 // @return SyncAction - the chosen action
-fn prompt_action() -> SyncAction {
+fn prompt_action(mode: &RunMode) -> SyncAction {
     loop {
-        print!("Action [r]eplace, [b]ackup, [s]kip: ");
+        app_print!(mode, "Action [r]eplace, [b]ackup, [s]kip: ");
         let mut stdout = std::io::stdout();
         let _ = std::io::Write::flush(&mut stdout);
 
@@ -350,7 +387,7 @@ fn prompt_action() -> SyncAction {
             "r" | "replace" => return SyncAction::Replace,
             "b" | "backup" => return SyncAction::BackupReplace,
             "s" | "skip" => return SyncAction::Skip,
-            _ => println!("Invalid choice. Use r, b, or s."),
+            _ => app_println!(mode, "Invalid choice. Use r, b, or s."),
         }
     }
 }
@@ -358,8 +395,8 @@ fn prompt_action() -> SyncAction {
 // Helper to ask for a final confirmation before executing actions
 //
 // @return bool - true if confirmed, false otherwise
-fn confirm_proceed() -> bool {
-    print!("\nProceed? [y/N]: ");
+fn confirm_proceed(mode: &RunMode) -> bool {
+    app_print!(mode, "\nProceed? [y/N]: ");
     let mut stdout = std::io::stdout();
     let _ = std::io::Write::flush(&mut stdout);
     let mut input = String::new();
@@ -374,12 +411,12 @@ fn confirm_proceed() -> bool {
 //
 // @param title: &str - the title of the summary section
 // @param plan: &[PlanItem] - items to print
-fn print_plan(title: &str, plan: &[PlanItem]) {
-    println!("\n{}", title);
-    print_plan_section("ignored", plan, SyncAction::Ignore);
-    print_plan_section("skipped", plan, SyncAction::Skip);
-    print_plan_section("replaced", plan, SyncAction::Replace);
-    print_plan_section("backup+replaced", plan, SyncAction::BackupReplace);
+fn print_plan(mode: &RunMode, title: &str, plan: &[PlanItem]) {
+    app_println!(mode, "\n{}", title);
+    print_plan_section(mode, "ignored", plan, SyncAction::Ignore);
+    print_plan_section(mode, "skipped", plan, SyncAction::Skip);
+    print_plan_section(mode, "replaced", plan, SyncAction::Replace);
+    print_plan_section(mode, "backup+replaced", plan, SyncAction::BackupReplace);
 }
 
 // Helper to print a summary for a specific action group
@@ -387,30 +424,72 @@ fn print_plan(title: &str, plan: &[PlanItem]) {
 // @param label: &str - the label for the action group
 // @param plan: &[PlanItem] - items to print
 // @param action: SyncAction - action type to filter by
-fn print_plan_section(label: &str, plan: &[PlanItem], action: SyncAction) {
+fn print_plan_section(mode: &RunMode, label: &str, plan: &[PlanItem], action: SyncAction) {
     let mut items = plan.iter().filter(|item| item.action == action).peekable();
     if items.peek().is_none() {
         return;
     }
 
-    println!("\n{}:", label);
+    app_println!(mode, "\n{}:", label);
     for item in items {
         match &item.reason {
-            Some(reason) => println!("- {} ({})", item.to.display(), reason),
-            None => println!("- {}", item.to.display()),
+            Some(reason) => app_println!(mode, "- {} ({})", item.to.display(), reason),
+            None => app_println!(mode, "- {}", item.to.display()),
         }
     }
 }
 
-fn help() {
-    println!("dbdm - dotfile link manager");
-    println!("\nUsage:");
-    println!("  dbdm <command> [--force]");
-    println!("\nCommands:");
-    println!("  check   Validate config and planned links");
-    println!("  sync    Apply config links to the filesystem");
-    println!("  help    Show this help message");
-    println!("\nConfig:");
-    println!("  Looks for dbdm.conf in the current directory.");
-    println!("  Each line: 'link = <from> <to>'");
+fn is_empty_path(path: &Path, meta: &std::fs::Metadata) -> std::io::Result<bool> {
+    if meta.is_file() {
+        return Ok(meta.len() == 0);
+    }
+
+    if meta.is_dir() {
+        return is_empty_dir_recursive(path);
+    }
+
+    if meta.file_type().is_symlink() {
+        return Ok(false);
+    }
+
+    Ok(false)
+}
+
+fn is_empty_dir_recursive(path: &Path) -> std::io::Result<bool> {
+    for entry in std::fs::read_dir(path)? {
+        let entry = entry?;
+        let entry_path = entry.path();
+        let meta = std::fs::symlink_metadata(&entry_path)?;
+
+        if meta.is_file() {
+            if meta.len() > 0 {
+                return Ok(false);
+            }
+            continue;
+        }
+
+        if meta.is_dir() {
+            if !is_empty_dir_recursive(&entry_path)? {
+                return Ok(false);
+            }
+            continue;
+        }
+
+        return Ok(false);
+    }
+
+    Ok(true)
+}
+
+fn help(mode: &RunMode) {
+    app_println!(mode, "dbdm - dotfile link manager");
+    app_println!(mode, "\nUsage:");
+    app_println!(mode, "  dbdm <command> [--force]");
+    app_println!(mode, "\nCommands:");
+    app_println!(mode, "  check   Validate config and planned links");
+    app_println!(mode, "  sync    Apply config links to the filesystem");
+    app_println!(mode, "  help    Show this help message");
+    app_println!(mode, "\nConfig:");
+    app_println!(mode, "  Looks for dbdm.conf in the current directory.");
+    app_println!(mode, "  Each line: 'link = <from> <to>'");
 }

@@ -47,7 +47,7 @@ pub fn read_config(path: &PathBuf) -> Result<Config, String> {
 
 fn parse_line(line: &str, idx: usize) -> Result<Link, String> {
     // Read split out the line
-    let (_text_kind, mut text_params) = match line.split_once('=') {
+    let (text_kind, mut text_params) = match line.split_once('=') {
         Some((a, b)) => (a, b),
         None => return Err(format!("Invalid syntax on line {}", idx)),
     };
@@ -57,6 +57,22 @@ fn parse_line(line: &str, idx: usize) -> Result<Link, String> {
     if text_params.is_empty() {
         return Err(format!(
             "Invalid number of values on line {}. The supported syntax is '<kind> = <from> <to>'. Found 0 args",
+            idx
+        ));
+    }
+
+    // Verify its only two arguments
+    let arg_count = text_params.split_whitespace().count();
+    if arg_count != 2 {
+        return Err(format!(
+            "Invalid number of values on line {}. The supported syntax is '<kind> = <from> <to>'. Found {} args",
+            idx, arg_count
+        ));
+    }
+
+    if text_kind.trim() != "link" {
+        return Err(format!(
+            "Invalid path syntax on line {}. The supported syntax is '<kind> = <from> <to>'",
             idx
         ));
     }
@@ -97,17 +113,10 @@ fn parse_line(line: &str, idx: usize) -> Result<Link, String> {
         });
     }
 
-    let arg_count = text_params.split_whitespace().count();
-    if arg_count != 2 {
-        return Err(format!(
-            "Invalid number of values on line {}. The supported syntax is '<kind> = <from> <to>'. Found {} args",
-            idx, arg_count
-        ));
-    }
-
+    // TODO: Not sure if I am missing a case in which the state can occur here
     Err(format!(
-        "Invalid path syntax on line {}. The supported syntax is '<kind> = <from> <to>'",
-        idx
+        "Unknown error encountered while parsing line {}",
+        idx,
     ))
 }
 
