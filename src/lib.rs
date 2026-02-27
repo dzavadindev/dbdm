@@ -130,7 +130,11 @@ pub fn unique_backup_path(dir: &Path, name: &str) -> PathBuf {
 // @param path: &Path - the path to remove
 // @return Result<()> - if removal was successful
 pub fn remove_existing(path: &Path) -> std::io::Result<()> {
-    let meta = std::fs::symlink_metadata(path)?;
+    let meta = match std::fs::symlink_metadata(path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(err) => return Err(err),
+    };
     if meta.file_type().is_symlink() || meta.is_file() {
         std::fs::remove_file(path)
     } else {
