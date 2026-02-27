@@ -40,7 +40,7 @@ fn main() {
         .cloned()
         .unwrap_or_else(|| String::from("help"));
 
-    if command != "check" || command != "sync" {
+    if command != "check" && command != "sync" {
         println!("\x1b[31mInvalid argument {}\x1b[0m\n", command);
         help(&mode);
         return;
