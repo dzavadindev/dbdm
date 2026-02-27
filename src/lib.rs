@@ -35,8 +35,9 @@ pub fn resolve_symlink_target(link_path: &Path, target: &Path) -> PathBuf {
 // @param to: &Path - the destination path for the symlink
 // @return Result<()> - if replacement was successful
 pub fn replace_link(from: &Path, to: &Path) -> std::io::Result<()> {
-    remove_existing(to)?;
-    std::os::unix::fs::symlink(from, to)
+    let dest = resolve_link_destination(from, to)?;
+    remove_existing(&dest)?;
+    std::os::unix::fs::symlink(from, &dest)
 }
 
 // Helper to backup an existing target and create a symlink
@@ -45,6 +46,7 @@ pub fn replace_link(from: &Path, to: &Path) -> std::io::Result<()> {
 // @param to: &Path - the destination path to backup and replace
 // @return Result<()> - if backup and replacement were successful
 pub fn backup_and_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    let dest = resolve_link_destination(from, to)?;
     let backup_dir = match std::fs::metadata(from) {
         Ok(meta) if meta.is_dir() => from.to_path_buf(),
         _ => from
@@ -54,14 +56,56 @@ pub fn backup_and_replace(from: &Path, to: &Path) -> std::io::Result<()> {
     };
 
     std::fs::create_dir_all(&backup_dir)?;
-    let base_name = to
+    let base_name = dest
         .file_name()
         .map(|name| name.to_string_lossy().to_string())
         .unwrap_or_else(|| "backup".to_string());
     let backup_path = unique_backup_path(&backup_dir, &base_name);
 
-    std::fs::rename(to, &backup_path)?;
-    std::os::unix::fs::symlink(from, to)
+    std::fs::rename(&dest, &backup_path)?;
+    std::os::unix::fs::symlink(from, &dest)
+}
+
+// Helper to resolve the actual destination path for a symlink
+//
+// Uses the source path to decide file vs dir semantics, then adjusts the
+// destination accordingly.
+//
+// Rules:
+// - If <from> is a dir and <to> exists as a file -> error
+// - If <from> is a dir and <to> is dir or missing -> link at <to>
+// - If <from> is a file and <to> exists as dir -> link at <to>/<from basename>
+// - If <from> is a file and <to> is file or missing -> link at <to>
+pub fn resolve_link_destination(from: &Path, to: &Path) -> std::io::Result<PathBuf> {
+    let from_meta = std::fs::metadata(from)?;
+    let to_meta = std::fs::symlink_metadata(to).ok();
+
+    if from_meta.is_dir() {
+        if let Some(meta) = to_meta {
+            if meta.is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("destination is file for directory source: {}", to.display()),
+                ));
+            }
+        }
+
+        return Ok(to.to_path_buf());
+    }
+
+    if let Some(meta) = to_meta {
+        if meta.is_dir() {
+            let name = from.file_name().ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("source has no basename: {}", from.display()),
+                )
+            })?;
+            return Ok(to.join(name));
+        }
+    }
+
+    Ok(to.to_path_buf())
 }
 
 // Helper to create a unique backup path with a numeric suffix

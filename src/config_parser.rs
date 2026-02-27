@@ -35,6 +35,10 @@ pub fn read_config(path: &PathBuf) -> Result<Config, String> {
 
     let mut links: Vec<Link> = Vec::new();
     for (idx, line) in content.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        };
+
         let link: Link = match parse_line(line, idx) {
             Ok(res) => res,
             Err(err) => return Err(err),
@@ -92,6 +96,32 @@ fn parse_line(line: &str, idx: usize) -> Result<Link, String> {
                 "<from> path specified at line {} doest contain any object",
                 idx
             ));
+        }
+
+        let from_meta = std::fs::metadata(&from_path)
+            .map_err(|err| format!("Failed to read <from> metadata on line {}: {}", idx, err))?;
+        let to_meta = std::fs::symlink_metadata(&to_path).ok();
+        let to_ends_with_slash = to.ends_with('/');
+
+        if from_meta.is_dir() {
+            if let Some(ref meta) = to_meta {
+                if meta.is_file() {
+                    return Err(format!(
+                        "Invalid destination on line {}: <to> is a file for directory source",
+                        idx
+                    ));
+                }
+            }
+        }
+
+        if from_meta.is_file() {
+            if to_meta.is_none() && to_ends_with_slash {
+                return Err(format!(
+                    "Destination directory does not exist on line {}: {}",
+                    idx,
+                    to_path.display()
+                ));
+            }
         }
 
         if !to_path.exists() {

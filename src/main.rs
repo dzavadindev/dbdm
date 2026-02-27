@@ -1,5 +1,8 @@
 use crate::config_parser::Config;
-use dbdm::{backup_and_replace, canonicalize_or_fallback, replace_link, resolve_symlink_target};
+use dbdm::{
+    backup_and_replace, canonicalize_or_fallback, replace_link, resolve_link_destination,
+    resolve_symlink_target,
+};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
@@ -31,6 +34,17 @@ fn main() {
         test_mode: args.iter().any(|arg| arg == "--test-mode"),
     };
     let force = args.iter().any(|arg| arg == "--force");
+    let command = args
+        .iter()
+        .find(|arg| !arg.starts_with("--"))
+        .cloned()
+        .unwrap_or_else(|| String::from("help"));
+
+    if command != "check" || command != "sync" {
+        println!("\x1b[31mInvalid argument {}\x1b[0m\n", command);
+        help(&mode);
+        return;
+    }
 
     // Grab current dir
     let mut pwd = match std::env::current_dir() {
@@ -64,15 +78,9 @@ fn main() {
     };
 
     // Handle the command
-    let command = args
-        .iter()
-        .find(|arg| !arg.starts_with("--"))
-        .cloned()
-        .unwrap_or_else(|| String::from("help"));
     match command.as_str() {
         "check" => check(&config, &mode),
         "sync" => sync(&config, &mode, force),
-        "help" => help(&mode),
         _ => help(&mode),
     }
 }
@@ -84,11 +92,14 @@ fn main() {
 // @param config: &Config - the parsed config state
 fn check(config: &Config, mode: &RunMode) {
     for link in &config.links {
-        // Get an absolute path to the files
         let from_full = std::fs::canonicalize(&link.from).unwrap_or_else(|_| link.from.clone());
-        let to_full = std::fs::canonicalize(&link.to).unwrap_or_else(|_| link.to.clone());
+        let resolved_to = match resolve_link_destination(&link.from, &link.to) {
+            Ok(path) => path,
+            Err(_) => link.to.clone(),
+        };
+        let to_full = std::fs::canonicalize(&resolved_to).unwrap_or_else(|_| resolved_to.clone());
 
-        let is_match = match std::fs::read_link(&link.to) {
+        let is_match = match std::fs::read_link(&resolved_to) {
             Ok(target) => {
                 let target_full = std::fs::canonicalize(&target).unwrap_or(target);
                 target_full == from_full
@@ -148,23 +159,36 @@ fn sync(config: &Config, mode: &RunMode, force: bool) {
     for link in &config.links {
         let from = link.from.clone();
         let to = link.to.clone();
+        let resolved_to = match resolve_link_destination(&from, &to) {
+            Ok(path) => path,
+            Err(err) => {
+                plan.push(PlanItem {
+                    from,
+                    to,
+                    action: SyncAction::Skip,
+                    reason: Some(err.to_string()),
+                });
+                continue;
+            }
+        };
 
         // Check if the path is valid and we have permission to modify it
-        match std::fs::symlink_metadata(&to) {
+        match std::fs::symlink_metadata(&resolved_to) {
             Ok(meta) => {
                 if meta.file_type().is_symlink() {
                     // Try grab the file the link points to
-                    let target = std::fs::read_link(&to).unwrap_or_else(|_| to.clone());
+                    let target =
+                        std::fs::read_link(&resolved_to).unwrap_or_else(|_| resolved_to.clone());
 
                     let from_full = canonicalize_or_fallback(&from);
                     let target_full =
-                        canonicalize_or_fallback(&resolve_symlink_target(&to, &target));
+                        canonicalize_or_fallback(&resolve_symlink_target(&resolved_to, &target));
 
                     // Update the plan with an IGNORE
                     if target_full == from_full {
                         plan.push(PlanItem {
                             from,
-                            to,
+                            to: resolved_to,
                             action: SyncAction::Ignore,
                             reason: None,
                         });
@@ -172,7 +196,7 @@ fn sync(config: &Config, mode: &RunMode, force: bool) {
                     }
                 }
 
-                let is_empty = is_empty_path(&to, &meta).unwrap_or(false);
+                let is_empty = is_empty_path(&resolved_to, &meta).unwrap_or(false);
                 let is_conflict = !is_empty;
 
                 // Account for the flag
@@ -186,7 +210,7 @@ fn sync(config: &Config, mode: &RunMode, force: bool) {
                 let idx = plan.len();
                 plan.push(PlanItem {
                     from,
-                    to,
+                    to: resolved_to,
                     action,
                     reason: None,
                 });
@@ -200,7 +224,7 @@ fn sync(config: &Config, mode: &RunMode, force: bool) {
             Err(_) => {
                 plan.push(PlanItem {
                     from,
-                    to,
+                    to: resolved_to,
                     action: SyncAction::Replace,
                     reason: None,
                 });
