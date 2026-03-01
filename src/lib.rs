@@ -80,7 +80,9 @@ pub fn resolve_link_destination(from: &Path, to: &Path) -> std::io::Result<PathB
     let from_meta = std::fs::metadata(from)?;
     let to_meta = std::fs::symlink_metadata(to).ok();
 
+    // if <from> is dir
     if from_meta.is_dir() {
+        // and <to> is file
         if let Some(meta) = to_meta {
             if meta.is_file() {
                 return Err(std::io::Error::new(
@@ -89,11 +91,13 @@ pub fn resolve_link_destination(from: &Path, to: &Path) -> std::io::Result<PathB
                 ));
             }
         }
-
+        // and <to> is dir
         return Ok(to.to_path_buf());
     }
 
+    // if <from> is file
     if let Some(meta) = to_meta {
+        // and <to> is dir
         if meta.is_dir() {
             let name = from.file_name().ok_or_else(|| {
                 std::io::Error::new(
@@ -105,6 +109,7 @@ pub fn resolve_link_destination(from: &Path, to: &Path) -> std::io::Result<PathB
         }
     }
 
+    // and <to> is file
     Ok(to.to_path_buf())
 }
 

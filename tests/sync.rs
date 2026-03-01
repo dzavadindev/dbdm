@@ -144,6 +144,7 @@ fn perform_sync_when_targets_exist_with_backup() {
     let mut command = std::process::Command::new(env!("CARGO_BIN_EXE_dbdm"));
     let mut child = command
         .arg("sync")
+        .arg("--test-mode")
         .current_dir(workspace.path())
         .stdin(std::process::Stdio::piped())
         .spawn()

@@ -93,11 +93,11 @@ fn main() {
 fn check(config: &Config, mode: &RunMode) {
     for link in &config.links {
         let from_full = std::fs::canonicalize(&link.from).unwrap_or_else(|_| link.from.clone());
+
         let resolved_to = match resolve_link_destination(&link.from, &link.to) {
             Ok(path) => path,
             Err(_) => link.to.clone(),
         };
-        let to_full = std::fs::canonicalize(&resolved_to).unwrap_or_else(|_| resolved_to.clone());
 
         let is_match = match std::fs::read_link(&resolved_to) {
             Ok(target) => {
@@ -112,14 +112,14 @@ fn check(config: &Config, mode: &RunMode) {
                 mode,
                 "\x1b[32m{} -> {}\x1b[0m",
                 from_full.display(),
-                to_full.display()
+                resolved_to.display()
             );
         } else {
             app_println!(
                 mode,
                 "\x1b[31m{} -> {}\x1b[0m",
                 from_full.display(),
-                to_full.display()
+                resolved_to.display()
             );
         }
     }
